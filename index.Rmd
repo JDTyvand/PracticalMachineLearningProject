@@ -1,0 +1,155 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Jørgen D. Tyvand"
+date: "March 18, 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Summary
+
+This report covers the final course project for the Practical Machine Learning course from Johns 
+Hopkins University on Coursera. The course project concerns data collected from
+activity sensors gathered from 6 participants with regards to the correctness of
+performing a barbell lift. For further information see the [study website](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har).
+
+We are to train various machine learning models and report
+on accuracy and out of sample error using a cross validation set. 
+We also have to test the models on a supplied test set of 20 test cases for a 
+separate quiz in the course.
+
+We train 4 models: a classification tree model ("rpart"), a linear discriminate analysis model ("lda"),
+a generalized boosted model ("gbm") and a random forest model ("rf"). We find that there is an increase in accuracy
+from each of these models to the next (random forest having the highest accuracy), and
+that both the boosted and the random forest models correctly predict all 20 test cases 
+correctly for the course quiz.
+
+## Data loading and cleaning
+
+The following code loads the required packages and downloads the required files if they
+do not exist in the working directory. The files are then read to data frames.
+A crucial step here, to ensuring that the training of models does not go on forever, is 
+to set all blank values to NA so we can omit columns with blank values later on.
+
+```{r, message = FALSE}
+library(caret)
+library(dplyr)
+if(!file.exists("pml-training.csv")) {
+        trainingURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+        download.file(trainingURL, destfile = "pml-training.csv", method = "curl")
+}
+if(!file.exists("pml-testing.csv")) {
+        testingURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+        download.file(testingURL, destfile = "pml-testing.csv", method = "curl")
+}
+training <- read.csv("pml-training.csv", na.strings = c("NA", ""))
+testing <- read.csv("pml-testing.csv", na.strings = c("NA", ""))
+
+print(dim(training))
+```
+
+As we can see, the training set contains 19622 rows of 160 observations, one of these being the "classe" variable which we are to predict. This variable is a factor variable of 5 different classes,
+given as follows:
+
+- Class A, exercise done exactly according to the specification
+- Class B, throwing the elbows to the front
+- Class C, lifting the dumbbell only halfway
+- Class D, lowering the dumbbell only halfway
+- Class E, throwing the hips to the front
+
+For cleaning the data set, we first set the seed for reproducibility, 
+and remove any columns with NA values. We also remove the first 7 rows of the data set, 
+as these include values like user name and time stamp, which are not really good predictors, as they are not related to the actual performing of the barbell lift.
+
+```{r}
+set.seed(2604)
+training <- training %>% select_if(~ !any(is.na(.))) %>% select(-c(1:7))
+testing <- testing %>% select_if(~ !any(is.na(.))) %>% select(-c(1:7))
+
+print(dim(training))
+```
+
+We have now reduced the training set to 53 columns, with 52 predictors and the 
+classe variable.
+
+## Data partitioning and model training
+
+To train the models and compute the out of sample error, we split the training set
+into a smaller training set (70%) and a cross validation set (30%). 
+
+```{r}
+inTrain <- createDataPartition(training$classe, p = 0.7, list = FALSE)
+train <- training[inTrain,]
+cv <- training[-inTrain,]
+```
+
+A lot of previous course participants have had problems with very long run times
+when training the models, especially the random forest model. Len Greski (one of the mentors for this course on Coursera) has written
+a [report](https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md) on how to speed up the training process, and I have implemented both
+the trainControl settings and the parallelization suggested in his report when training
+all my models.
+
+```{r, message = FALSE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+rpartMod <- train(classe ~ ., data = train, method = "rpart", trControl = fitControl)
+ldaMod <- train(classe ~ ., data = train, method = "lda", trControl = fitControl)
+gbmMod <- train(classe ~ ., data = train, method = "gbm", trControl = fitControl, verbose = FALSE)
+rfMod <- train(classe ~ ., data = train, method = "rf", trControl = fitControl)
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+Printouts of each of the model predictions on the cross validation sets can be found in
+the [Appendix]. We see that we get the following accuracy and out of error estimates
+for the four models:
+
+- rpart: Accuracy 0.5006, out of sample error 0.4994
+- lda:   Accuracy 0.7035, out of sample error 0.2965
+- gbm:   Accuracy 0.9669, out of sample error 0.0331
+- rf:    Accuracy 0.9932, out of sample error 0.0068
+
+## Prediction on test set
+
+Finally we predict using each model on the test set required for the final course quiz
+
+```{r}
+rpartTestPred <- predict(rpartMod, testing)
+print(rpartTestPred)
+ldaTestPred <- predict(ldaMod, testing)
+print(ldaTestPred)
+gbmTestPred <- predict(gbmMod, testing)
+print(gbmTestPred)
+rfTestPred <- predict(rfMod, testing)
+print(rfTestPred)
+```
+I have used the answers for the random forest (highest accuracy) on the course quiz, which 
+gives 20/20 correct answers. We therefore see that both the gbm and rf models 
+correctly predict the test set.
+
+## Appendix
+
+The following printouts show the confusionMatrix printouts for each of the four models
+when predicting the cross validation sets, showing the increase in accuracy up to 99.32% 
+for the random forest model.
+
+```{r}
+rpartPred <- predict(rpartMod, cv)
+print(confusionMatrix(cv$classe, rpartPred))
+ldaPred <- predict(ldaMod, cv)
+print(confusionMatrix(cv$classe, ldaPred))
+gbmPred <- predict(gbmMod, cv)
+print(confusionMatrix(cv$classe, gbmPred))
+rfPred <- predict(rfMod, cv)
+print(confusionMatrix(cv$classe, rfPred))
+```
